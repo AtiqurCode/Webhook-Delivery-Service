@@ -149,8 +149,7 @@ npm run dev              # → http://localhost:5173
 Once the app is running (either option above), the fastest way to see it work:
 
 1. Open the frontend and go to **Webhooks**. Add an endpoint — for a URL you can actually
-   watch requests hit, try a free tool like [webhook.site](https://webhook.site) or
-   `https://httpbin.org/status/200` to just test success/failure codes.
+   watch requests hit, use one of the free tools below.
 2. Go to **Create Event**, leave the sample payload as-is, and hit **Send Event**.
 3. Go to **Delivery History**. You'll see a `pending` row — once the queue worker (or Docker's
    `queue` container) picks it up, it flips to `success` or `failed`.
@@ -165,6 +164,21 @@ docker compose exec app php artisan db:seed              # Docker
 This fills the database with a handful of endpoints, ~20 events, and a realistic mix of
 successful, pending, and failed deliveries — written directly, not by making real HTTP calls,
 so it's instant.
+
+### Free tools for testing webhook delivery
+
+You don't need a real server to try this out — these are free and let you watch deliveries
+arrive in real time:
+
+- **[webhook.site](https://webhook.site)** — gives you a unique URL instantly (no signup),
+  shows every incoming request live, including headers like our `X-Webhook-Signature`, and
+  the exact JSON body we sent.
+- **[Beeceptor](https://beeceptor.com)** — similar idea, but also lets you set up a custom
+  mock response (status code, body, delay), which is handy for deliberately testing failure
+  and timeout handling from the receiving end.
+- **`https://httpbin.org/status/{code}`** — no signup, no UI, just returns whatever HTTP
+  status code you ask for. The quickest way to trigger a specific failure (e.g. `/status/500`)
+  without setting anything up.
 
 ### Screenshots
 
