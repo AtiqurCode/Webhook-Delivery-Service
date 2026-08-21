@@ -9,7 +9,7 @@ Receive Event → Process Event → Deliver Webhook → Track Result
 
 ## Demo
 
-[![Watch the demo video](frontend/public/Dashboard-01.png)](https://drive.google.com/file/d/1emEpFytMEZ61wGMeXjatuqiFvLYf39dr/view?usp=drive_link)
+[![Watch the demo video](frontend/public/Dashboard-01.png)](https://github.com/AtiqurCode/Webhook-Delivery-Service/blob/master/frontend/public/Webhook%20Delivery%20Service%20Assesment%20review.mp4)
 
 *Click the screenshot above to watch a short walkthrough of the app (backend API, frontend,
 and delivery/retry flow in action).*
