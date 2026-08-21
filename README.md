@@ -7,6 +7,13 @@ keeping a full history of what was sent and what happened.
 Receive Event → Process Event → Deliver Webhook → Track Result
 ```
 
+## Demo
+
+[![Watch the demo video](frontend/public/Dashboard-01.png)](<frontend/public/Webhook Delivery Service Assesment review.mp4>)
+
+*Click the screenshot above to watch a short walkthrough of the app (backend API, frontend,
+and delivery/retry flow in action).*
+
 ## Table of Contents
 
 1. [Project Overview](#1-project-overview)
@@ -16,7 +23,6 @@ Receive Event → Process Event → Deliver Webhook → Track Result
 5. [Technical Decisions](#5-technical-decisions)
 6. [Edge Cases & Limitations](#6-edge-cases--limitations)
 7. [Testing](#7-testing)
-8. [AI Tools](#8-ai-tools)
 8. [AI Tools](#8-ai-tools)
 
 ## 1. Project Overview
@@ -159,6 +165,26 @@ docker compose exec app php artisan db:seed              # Docker
 This fills the database with a handful of endpoints, ~20 events, and a realistic mix of
 successful, pending, and failed deliveries — written directly, not by making real HTTP calls,
 so it's instant.
+
+### Screenshots
+
+**Dashboard** — a quick summary of endpoints, events, and delivery outcomes.
+
+![Dashboard](frontend/public/Dashboard-01.png)
+
+**Webhooks** — register endpoints, toggle them active/inactive, and grab each one's signing
+secret.
+
+![Webhooks](frontend/public/Webhooks-02.png)
+
+**Create Event** — send an event with a custom payload straight from the browser.
+
+![Create Event](<frontend/public/Create Event-03.png>)
+
+**Delivery History** — every attempt, its status, HTTP result, and how many times it was
+tried — with a retry button on anything that failed.
+
+![Delivery History](<frontend/public/Delivery History-04.png>)
 
 ### Using the API directly
 
