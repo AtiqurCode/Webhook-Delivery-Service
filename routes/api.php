@@ -2,8 +2,11 @@
 
 use App\Http\Controllers\Api\DeliveryController;
 use App\Http\Controllers\Api\EventController;
+use App\Http\Controllers\Api\StatsController;
 use App\Http\Controllers\Api\WebhookEndpointController;
 use Illuminate\Support\Facades\Route;
+
+Route::get('stats', [StatsController::class, 'index'])->name('stats.index');
 
 Route::apiResource('webhooks', WebhookEndpointController::class)
     ->except(['show'])
