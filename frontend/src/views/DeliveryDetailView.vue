@@ -2,19 +2,23 @@
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, ApiError } from '@/api/client'
+import { useToast } from '@/composables/useToast'
 import StatusBadge from '@/components/StatusBadge.vue'
 import BaseSpinner from '@/components/BaseSpinner.vue'
 
 const route = useRoute()
+const toast = useToast()
+
 const delivery = ref(null)
 const loadError = ref('')
 const loading = ref(true)
+const retrying = ref(false)
 
 function formatTime(value) {
   return value ? new Date(value).toLocaleString() : '—'
 }
 
-onMounted(async () => {
+async function load() {
   try {
     const { data } = await api.deliveries.show(route.params.id)
     delivery.value = data
@@ -23,7 +27,23 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-})
+}
+
+async function retry() {
+  retrying.value = true
+
+  try {
+    await api.deliveries.retry(delivery.value.id)
+    toast.success('Retrying this delivery…')
+    await load()
+  } catch (error) {
+    toast.error(error instanceof ApiError ? error.message : 'Could not retry this delivery.')
+  } finally {
+    retrying.value = false
+  }
+}
+
+onMounted(load)
 </script>
 
 <template>
@@ -60,6 +80,10 @@ onMounted(async () => {
         <dt>Delivered At</dt>
         <dd>{{ formatTime(delivery.delivered_at) }}</dd>
       </dl>
+
+      <button v-if="delivery.status === 'failed'" type="button" class="retry-button" :disabled="retrying" @click="retry">
+        {{ retrying ? 'Retrying…' : '↻ Retry delivery' }}
+      </button>
 
       <h2>Payload</h2>
       <pre class="payload">{{ JSON.stringify(delivery.event.payload, null, 2) }}</pre>
@@ -104,6 +128,22 @@ dd {
 
 .error-text {
   color: var(--color-failed);
+}
+
+.retry-button {
+  margin-top: 1.25rem;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.retry-button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 h2 {

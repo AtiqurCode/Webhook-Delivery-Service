@@ -56,6 +56,42 @@ test('deliveries can be listed and filtered by status', function () {
         ->assertJsonCount(0, 'data');
 });
 
+test('a failed delivery can be retried', function () {
+    $delivery = Delivery::factory()->create([
+        'status' => Delivery::STATUS_FAILED,
+        'attempt_count' => Delivery::MAX_ATTEMPTS,
+        'http_status' => 500,
+        'last_error' => 'Webhook returned HTTP 500',
+    ]);
+
+    Http::fake(['*' => Http::response(['ok' => true], 200)]);
+
+    $this->postJson("/api/deliveries/{$delivery->id}/retry")
+        ->assertOk()
+        ->assertJsonPath('data.status', Delivery::STATUS_SUCCESS);
+
+    expect($delivery->fresh())
+        ->attempt_count->toBe(Delivery::MAX_ATTEMPTS + 1)
+        ->http_status->toBe(200);
+});
+
+test('a delivery that is not failed cannot be retried', function () {
+    Http::fake(['*' => Http::response(['ok' => true], 200)]);
+    WebhookEndpoint::factory()->create();
+
+    $this->postJson('/api/events', [
+        'event_type' => 'user.created',
+        'data' => ['id' => 1],
+    ])->assertCreated();
+
+    $delivery = Delivery::sole();
+
+    expect($delivery->status)->toBe(Delivery::STATUS_SUCCESS);
+
+    $this->postJson("/api/deliveries/{$delivery->id}/retry")
+        ->assertStatus(422);
+});
+
 test('a single delivery can be viewed with event and endpoint details', function () {
     Http::fake(['*' => Http::response(['ok' => true], 200)]);
     WebhookEndpoint::factory()->create(['name' => 'CRM']);

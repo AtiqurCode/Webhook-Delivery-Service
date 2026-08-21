@@ -14,6 +14,7 @@ const loading = ref(true)
 const loadError = ref('')
 const statusFilter = ref('')
 const currentPage = ref(1)
+const retryingId = ref(null)
 
 async function loadDeliveries(page = 1) {
   loading.value = true
@@ -38,6 +39,20 @@ function refresh() {
 
 function formatTime(value) {
   return new Date(value).toLocaleString()
+}
+
+async function retry(delivery) {
+  retryingId.value = delivery.id
+
+  try {
+    await api.deliveries.retry(delivery.id)
+    toast.success(`Retrying delivery for “${delivery.event.event_type}”…`)
+    await loadDeliveries(currentPage.value)
+  } catch (error) {
+    toast.error(error instanceof ApiError ? error.message : 'Could not retry this delivery.')
+  } finally {
+    retryingId.value = null
+  }
 }
 
 watch(statusFilter, () => loadDeliveries(1))
@@ -78,6 +93,7 @@ onMounted(() => loadDeliveries())
             <th>HTTP</th>
             <th>Attempts</th>
             <th>Time</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -90,6 +106,17 @@ onMounted(() => loadDeliveries())
             <td>{{ delivery.http_status ?? '—' }}</td>
             <td>{{ delivery.attempt_count }}</td>
             <td>{{ formatTime(delivery.created_at) }}</td>
+            <td>
+              <button
+                v-if="delivery.status === 'failed'"
+                type="button"
+                class="retry-button"
+                :disabled="retryingId === delivery.id"
+                @click="retry(delivery)"
+              >
+                {{ retryingId === delivery.id ? 'Retrying…' : 'Retry' }}
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -165,6 +192,22 @@ onMounted(() => loadDeliveries())
 
 .table a {
   font-weight: 600;
+}
+
+.retry-button {
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.retry-button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .error {

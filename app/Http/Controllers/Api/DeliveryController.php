@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\DeliveryResource;
+use App\Jobs\DeliverWebhookJob;
 use App\Models\Delivery;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -24,5 +25,24 @@ class DeliveryController extends Controller
     public function show(Delivery $delivery): DeliveryResource
     {
         return DeliveryResource::make($delivery->load(['event', 'webhookEndpoint']));
+    }
+
+    /**
+     * Give a permanently failed delivery one more attempt. Only makes sense
+     * for deliveries that exhausted their automatic retries — one still
+     * "pending" is already queued, and a "success" doesn't need redriving.
+     */
+    public function retry(Delivery $delivery): DeliveryResource
+    {
+        abort_if($delivery->status !== Delivery::STATUS_FAILED, 422, 'Only failed deliveries can be retried.');
+
+        $delivery->update(['status' => Delivery::STATUS_PENDING]);
+
+        DeliverWebhookJob::dispatch($delivery->id);
+
+        // On the sync queue driver (used in tests) the job above has
+        // already run and mutated the database row through its own model
+        // instance, so refresh this one before serializing the response.
+        return DeliveryResource::make($delivery->refresh()->load(['event', 'webhookEndpoint']));
     }
 }

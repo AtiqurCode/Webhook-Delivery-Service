@@ -18,3 +18,4 @@ Route::get('events/{event:event_id}', [EventController::class, 'show'])->name('e
 
 Route::get('deliveries', [DeliveryController::class, 'index'])->name('deliveries.index');
 Route::get('deliveries/{delivery}', [DeliveryController::class, 'show'])->name('deliveries.show');
+Route::post('deliveries/{delivery}/retry', [DeliveryController::class, 'retry'])->name('deliveries.retry');

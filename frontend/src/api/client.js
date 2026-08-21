@@ -59,5 +59,6 @@ export const api = {
   deliveries: {
     list: (params = {}) => request(withQuery('/deliveries', params)),
     show: (id) => request(`/deliveries/${id}`),
+    retry: (id) => request(`/deliveries/${id}/retry`, { method: 'POST' }),
   },
 }
