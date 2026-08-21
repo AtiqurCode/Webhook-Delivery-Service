@@ -1,0 +1,69 @@
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &backend-env
+    APP_NAME: "Webhook Delivery Service"
+    APP_ENV: local
+    APP_DEBUG: "true"
+    APP_URL: http://localhost:8000
+    DB_CONNECTION: sqlite
+    DB_DATABASE: /var/www/html/database/database.sqlite
+    QUEUE_CONNECTION: database
+    SESSION_DRIVER: database
+    CACHE_STORE: database
+  volumes:
+    - sqlite_data:/var/www/html/database
+
+services:
+  # One-off: runs migrations once before app/queue start, so they never race
+  # each other writing to the same SQLite file.
+  migrate:
+    <<: *backend
+    command: >
+      sh -c "
+        [ -f .env ] || cp .env.example .env;
+        grep -q '^APP_KEY=$' .env && php artisan key:generate --force --no-interaction;
+        touch database/database.sqlite;
+        php artisan migrate --force
+      "
+
+  app:
+    <<: *backend
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "
+        [ -f .env ] || cp .env.example .env;
+        grep -q '^APP_KEY=$' .env && php artisan key:generate --force --no-interaction;
+        php artisan serve --host=0.0.0.0 --port=8000
+      "
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  queue:
+    <<: *backend
+    command: >
+      sh -c "
+        [ -f .env ] || cp .env.example .env;
+        grep -q '^APP_KEY=$' .env && php artisan key:generate --force --no-interaction;
+        php artisan queue:work --tries=3
+      "
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api
+    ports:
+      - "5173:5173"
+    depends_on:
+      - app
+
+volumes:
+  sqlite_data:
