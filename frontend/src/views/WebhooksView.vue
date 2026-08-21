@@ -70,6 +70,15 @@ async function toggleActive(endpoint) {
   }
 }
 
+async function copySecret(endpoint) {
+  try {
+    await navigator.clipboard.writeText(endpoint.secret)
+    toast.success('Signing secret copied to clipboard.')
+  } catch {
+    toast.error('Could not copy the secret — clipboard access was denied.')
+  }
+}
+
 function confirmRemoval(endpoint) {
   pendingRemoval.value = endpoint
 }
@@ -93,7 +102,11 @@ onMounted(() => loadEndpoints())
 <template>
   <section>
     <h1>Webhook Endpoints</h1>
-    <p class="hint">Only active endpoints receive newly created events.</p>
+    <p class="hint">
+      Only active endpoints receive newly created events. Each endpoint gets a signing secret —
+      every delivery includes an <code>X-Webhook-Signature</code> header (HMAC-SHA256 of the
+      request body) so your receiver can verify it actually came from us.
+    </p>
 
     <form class="card" @submit.prevent="addEndpoint">
       <div class="field">
@@ -129,6 +142,7 @@ onMounted(() => loadEndpoints())
           <tr>
             <th>Name</th>
             <th>URL</th>
+            <th>Signing Secret</th>
             <th>Status</th>
             <th></th>
           </tr>
@@ -137,6 +151,10 @@ onMounted(() => loadEndpoints())
           <tr v-for="endpoint in endpoints" :key="endpoint.id">
             <td>{{ endpoint.name }}</td>
             <td class="url-cell">{{ endpoint.url }}</td>
+            <td class="secret-cell">
+              <span>{{ endpoint.secret.slice(0, 10) }}…</span>
+              <button type="button" class="copy-button" @click="copySecret(endpoint)">Copy</button>
+            </td>
             <td>
               <button class="toggle" :class="{ 'toggle--on': endpoint.is_active }" @click="toggleActive(endpoint)">
                 {{ endpoint.is_active ? 'Active' : 'Disabled' }}
@@ -243,6 +261,25 @@ button[type='submit']:disabled {
   font-family: ui-monospace, monospace;
   font-size: 0.85rem;
   word-break: break-all;
+}
+
+.secret-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.copy-button {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-radius: 6px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 
 .toggle {

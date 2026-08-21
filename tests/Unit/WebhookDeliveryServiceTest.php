@@ -52,6 +52,37 @@ test('a connection failure is recorded with no http status', function () {
         ->and($delivery->last_error)->toContain('Could not resolve host');
 });
 
+test('the request is signed with an HMAC of the raw body using the endpoint secret', function () {
+    Http::fake(['*' => Http::response(['ok' => true], 200)]);
+
+    $endpoint = WebhookEndpoint::factory()->create();
+    $event = Event::factory()->create();
+    $delivery = Delivery::factory()->create([
+        'event_id' => $event->id,
+        'webhook_endpoint_id' => $endpoint->id,
+    ]);
+
+    app(WebhookDeliveryService::class)->attempt($delivery);
+
+    Http::assertSent(function ($request) use ($endpoint, $event) {
+        $expectedBody = json_encode([
+            'id' => $event->event_id,
+            'event' => $event->event_type,
+            'data' => $event->payload,
+        ]);
+        $expectedSignature = 'sha256='.hash_hmac('sha256', $expectedBody, $endpoint->secret);
+
+        return $request->body() === $expectedBody
+            && $request->header('X-Webhook-Signature')[0] === $expectedSignature;
+    });
+});
+
+test('a fresh webhook endpoint always has a signing secret', function () {
+    expect(WebhookEndpoint::factory()->create()->secret)
+        ->toBeString()
+        ->not->toBeEmpty();
+});
+
 test('the delivery is marked failed for good once the maximum attempt count is reached', function () {
     Http::fake(['*' => Http::response('server error', 500)]);
 

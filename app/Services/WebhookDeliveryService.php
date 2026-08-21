@@ -22,12 +22,22 @@ class WebhookDeliveryService
 
         $delivery->increment('attempt_count');
 
+        $body = json_encode([
+            'id' => $event->event_id,
+            'event' => $event->event_type,
+            'data' => $event->payload,
+        ]) ?: '{}';
+
+        // Sign the exact bytes we send so the receiver can verify the
+        // request actually came from us (and wasn't tampered with) by
+        // recomputing the same HMAC over the raw body with their secret.
+        $signature = hash_hmac('sha256', $body, $endpoint->secret);
+
         try {
-            $response = Http::timeout(self::TIMEOUT_SECONDS)->post($endpoint->url, [
-                'id' => $event->event_id,
-                'event' => $event->event_type,
-                'data' => $event->payload,
-            ]);
+            $response = Http::timeout(self::TIMEOUT_SECONDS)
+                ->withBody($body, 'application/json')
+                ->withHeaders(['X-Webhook-Signature' => "sha256={$signature}"])
+                ->post($endpoint->url);
 
             if ($response->successful()) {
                 $delivery->update([
