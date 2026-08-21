@@ -33,6 +33,14 @@
   --color-heading: var(--vt-c-text-light-1);
   --color-text: var(--vt-c-text-light-1);
 
+  --color-surface: var(--vt-c-white);
+  --color-success: #1a7f37;
+  --color-success-bg: #dafbe1;
+  --color-pending: #9a6700;
+  --color-pending-bg: #fff8c5;
+  --color-failed: #cf222e;
+  --color-failed-bg: #ffebe9;
+
   --section-gap: 160px;
 }
 
@@ -47,6 +55,14 @@
 
     --color-heading: var(--vt-c-text-dark-1);
     --color-text: var(--vt-c-text-dark-2);
+
+    --color-surface: var(--vt-c-black-soft);
+    --color-success: #3fb950;
+    --color-success-bg: rgba(63, 185, 80, 0.15);
+    --color-pending: #d29922;
+    --color-pending-bg: rgba(210, 153, 34, 0.15);
+    --color-failed: #f85149;
+    --color-failed-bg: rgba(248, 81, 73, 0.15);
   }
 }
 
