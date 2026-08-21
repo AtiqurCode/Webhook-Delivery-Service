@@ -1,135 +1,204 @@
 # Webhook Delivery Service
 
-A small service that receives events, fans them out to registered webhook endpoints, and
-tracks the result of every delivery attempt.
+A small service that receives events and delivers them to registered webhook endpoints,
+keeping a full history of what was sent and what happened.
 
 ```
 Receive Event → Process Event → Deliver Webhook → Track Result
 ```
 
+## Table of Contents
+
+1. [Project Overview](#1-project-overview)
+2. [Installation](#2-installation)
+3. [Usage](#3-usage)
+4. [Architecture](#4-architecture)
+5. [Technical Decisions](#5-technical-decisions)
+6. [Edge Cases & Limitations](#6-edge-cases--limitations)
+7. [Testing](#7-testing)
+8. [AI Tools](#8-ai-tools)
+8. [AI Tools](#8-ai-tools)
+
 ## 1. Project Overview
 
-The backend is a Laravel 13 (PHP 8.4) JSON API. When an event is posted to `POST /api/events`,
-the app creates the event, creates one `delivery` record per **active** webhook endpoint, and
-dispatches a queued job per delivery that performs the actual HTTP POST and records the
-outcome (status, HTTP code, attempt count, error message).
+This is a two-part app:
 
-The frontend (`frontend/`) is a small Vue 3 + Vite SPA with four screens — a dashboard with
-summary counts, manage webhook endpoints, create an event, and browse delivery history/detail
-— talking to the API over `fetch`. It includes the conventional bits you'd expect from a real
-admin UI: toast notifications for action feedback, a confirm dialog before destructive
-actions, paginated tables, and loading/empty states, all built as small local composables and
-components rather than pulling in a UI framework.
+- **Backend** — a Laravel 13 (PHP 8.4) JSON API. It lets you register webhook endpoints,
+  accepts events, and delivers each event to every active endpoint.
+- **Frontend** — a small Vue 3 app with four screens: a dashboard, webhook management,
+  event creation, and delivery history.
 
-Delivery happens off the request/response cycle via Laravel's queue, so creating an event
-returns immediately; the actual HTTP calls to (potentially slow or unreachable) third-party
-endpoints happen in the background with a bounded number of retries.
+Here's the flow in plain terms: you send an event to the API. The API saves it, then hands
+off one delivery job per active webhook endpoint to a background queue. Each job makes the
+actual HTTP call, waits for a response, and writes down what happened — success, failure,
+how many times it was tried, and why it failed if it did.
 
-## 2. Architecture
+The important part is that step happens **in the background**. Creating an event returns
+instantly, even if one of your webhook endpoints is slow or completely offline. A dead
+endpoint can't block, slow down, or break delivery to the other endpoints.
 
-```
- ┌────────────┐          ┌─────────────────────────┐
- │  Vue SPA   │──HTTP──▶│      Laravel API        │
- │ (frontend) │◀────────│   routes/api.php        │
- └────────────┘          └────────────┬────────────┘
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    ▼                 ▼                 ▼
-           WebhookEndpointCtrl  EventController   DeliveryController
-                    │                 │                 │
-                    ▼                 ▼                 ▼
-             WebhookEndpoint     EventService      Delivery (read)
-                  model               │
-                                      ▼
-                          creates Event + one Delivery
-                          per active WebhookEndpoint,
-                          dispatches DeliverWebhookJob
-                                      │
-                                      ▼
-                          ┌───────────────────────┐
-                          │  Queue (DB driver)    │
-                          └───────────┬───────────┘
-                                      ▼
-                          ┌───────────────────────┐
-                          │  DeliverWebhookJob    │
-                          │  → WebhookDeliveryService
-                          │  → Laravel HTTP client│
-                          └───────────┬───────────┘
-                                      ▼
-                         updates the Delivery record
-                         (status / http_status / attempt_count / last_error)
-```
+A few things this app does that go a bit beyond the bare minimum, because they're the kind
+of thing a real webhook platform needs:
 
-**Layers**
+- Every delivery is **signed** with an HMAC signature, so a receiving server can verify it
+  genuinely came from us.
+- Failed deliveries **retry automatically** a few times, and can also be **retried manually**
+  later from the UI or API.
+- It runs the same way with or without Docker — one command either way.
 
-- **Controllers** (`app/Http/Controllers/Api`) — thin, only handle HTTP concerns
-  (validation via Form Requests, calling a service, shaping the response via API Resources).
-- **Services** (`app/Services`) — `EventService` owns idempotent event creation + fan-out to
-  active endpoints; `WebhookDeliveryService` owns a single delivery attempt (HTTP call +
-  recording the result).
-- **Jobs** (`app/Jobs/DeliverWebhookJob.php`) — queued, retryable unit of work per delivery.
-- **Models** — `WebhookEndpoint`, `Event`, `Delivery`, plain Eloquent models with the
-  relationships between them.
+## 2. Installation
 
-## 3. Database Design
+You can run this with Docker (fastest, nothing to install) or natively (if you already have
+PHP/Node set up). Both work equally well — pick whichever is more convenient.
 
-Three tables:
+### Option A — Docker
 
-| Table | Purpose |
-|---|---|
-| `webhook_endpoints` | `name`, `url`, `is_active` |
-| `events` | `event_id` (unique), `event_type`, `payload` (JSON) |
-| `deliveries` | one row per `(event, webhook_endpoint)` pair: `status`, `http_status`, `attempt_count`, `last_error`, `delivered_at` |
-
-`deliveries` has a unique constraint on `(event_id, webhook_endpoint_id)` — one event is
-never delivered twice to the same endpoint.
-
-## 4. API
-
-All endpoints are under `/api` and return JSON. There is no authentication layer (see
-[Technical Decisions](#6-technical-decisions)).
-
-### Webhook endpoints
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/webhooks` | List endpoints (paginated) |
-| `POST` | `/api/webhooks` | Create an endpoint |
-| `PATCH` | `/api/webhooks/{id}` | Update an endpoint (e.g. toggle `is_active`) |
-| `DELETE` | `/api/webhooks/{id}` | Remove an endpoint |
+All you need is Docker Desktop (or Docker Engine + Compose).
 
 ```bash
-curl -X POST https://webhookdeliveryservice.test/api/webhooks \
+docker compose up --build
+```
+
+That's it. This one command:
+
+1. Builds the backend (PHP 8.4) and frontend (Node 22) images.
+2. Runs the database migrations once, automatically.
+3. Starts the API server, the background queue worker, and the frontend dev server.
+
+Once it's running:
+
+| | |
+|---|---|
+| Frontend | http://localhost:5173 |
+| API | http://localhost:8000/api |
+
+You don't need to touch a `.env` file or generate an app key yourself — every container does
+that on its own the first time it starts.
+
+The database (SQLite) lives in a Docker volume, so your data survives a restart
+(`docker compose down` then `up` again). If you want a totally clean slate — say, after
+changing a migration — wipe it with:
+
+```bash
+docker compose down -v
+```
+
+A few handy commands once it's up:
+
+```bash
+docker compose exec app php artisan test        # run the backend test suite
+docker compose exec app php artisan db:seed     # load sample data (see Usage below)
+docker compose logs -f queue                    # watch deliveries happen live
+```
+
+> **Port already taken?** If 8000 or 5173 is busy on your machine, just change the left side
+> of that service's `ports:` line in `docker-compose.yml`.
+
+### Option B — Native (no Docker)
+
+**You'll need:**
+
+- PHP 8.2 or newer (built and tested on 8.4)
+- Composer
+- Node.js 20+
+- Nothing else — SQLite ships with PHP's `pdo_sqlite` extension, no separate database
+  server to install
+
+**Backend:**
+
+```bash
+composer install
+cp .env.example .env
+php artisan key:generate
+touch database/database.sqlite      # on Windows: New-Item database/database.sqlite
+php artisan migrate
+
+php artisan serve                   # → http://localhost:8000
+php artisan queue:work              # run this in a second terminal — it delivers webhooks
+```
+
+That second command matters — without a queue worker running, events get created but never
+actually delivered. They'll just sit as `pending`.
+
+If you use [Laravel Herd](https://herd.laravel.com), the backend is served automatically once
+the folder is picked up — you still need `queue:work` running for deliveries to happen.
+
+**Frontend:**
+
+```bash
+cd frontend
+cp .env.example .env    # points the app at your API URL
+npm install
+npm run dev              # → http://localhost:5173
+```
+
+> If `npm install` complains about a peer dependency conflict between `oxlint` and
+> `eslint-plugin-oxlint`, that's an unrelated version mismatch in the dev tooling — just run
+> `npm install --legacy-peer-deps` instead.
+
+## 3. Usage
+
+### Try it in two minutes
+
+Once the app is running (either option above), the fastest way to see it work:
+
+1. Open the frontend and go to **Webhooks**. Add an endpoint — for a URL you can actually
+   watch requests hit, try a free tool like [webhook.site](https://webhook.site) or
+   `https://httpbin.org/status/200` to just test success/failure codes.
+2. Go to **Create Event**, leave the sample payload as-is, and hit **Send Event**.
+3. Go to **Delivery History**. You'll see a `pending` row — once the queue worker (or Docker's
+   `queue` container) picks it up, it flips to `success` or `failed`.
+
+Prefer sample data instead of doing this by hand? Run:
+
+```bash
+php artisan migrate:fresh --seed                        # native
+docker compose exec app php artisan db:seed              # Docker
+```
+
+This fills the database with a handful of endpoints, ~20 events, and a realistic mix of
+successful, pending, and failed deliveries — written directly, not by making real HTTP calls,
+so it's instant.
+
+### Using the API directly
+
+Everything below works with plain `curl`. There's no authentication on the API itself (see
+[Technical Decisions](#5-technical-decisions) for why), so you can try these right away.
+
+**Register a webhook endpoint**
+
+```bash
+curl -X POST http://localhost:8000/api/webhooks \
   -H "Content-Type: application/json" -H "Accept: application/json" \
   -d '{"name": "CRM", "url": "https://crm.example.com/webhooks"}'
-
-curl -X PATCH https://webhookdeliveryservice.test/api/webhooks/1 \
-  -H "Content-Type: application/json" -H "Accept: application/json" \
-  -d '{"is_active": false}'
 ```
 
-Every endpoint gets a server-generated `secret` (returned in the response above), used to sign
-outgoing deliveries — see [Signature verification](#signature-verification) below.
+The response includes a `secret` — a signing key generated just for this endpoint (more on
+that below).
 
-### Events
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/events` | Create (and deliver) an event |
-| `GET` | `/api/events` | List events |
-| `GET` | `/api/events/{event_id}` | Show one event by its public `event_id` |
+**Enable/disable or remove an endpoint**
 
 ```bash
-curl -X POST https://webhookdeliveryservice.test/api/events \
+curl -X PATCH http://localhost:8000/api/webhooks/1 \
+  -H "Content-Type: application/json" -H "Accept: application/json" \
+  -d '{"is_active": false}'
+
+curl -X DELETE http://localhost:8000/api/webhooks/1 -H "Accept: application/json"
+```
+
+**Send an event**
+
+```bash
+curl -X POST http://localhost:8000/api/events \
   -H "Content-Type: application/json" -H "Accept: application/json" \
   -d '{
         "event_type": "user.created",
-        "event_id": "evt_01JABC123",
         "data": {"id": 123, "name": "John Doe", "email": "john@example.com"}
       }'
 ```
 
-`event_id` is optional — if omitted, the server generates a ULID-based one. Response:
+`event_id` is optional — leave it out and the server generates one for you. The response
+tells you how many deliveries were queued:
 
 ```json
 {
@@ -144,263 +213,272 @@ curl -X POST https://webhookdeliveryservice.test/api/events \
 }
 ```
 
-### Deliveries
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/deliveries` | List deliveries (paginated). Filter with `?status=success\|pending\|failed` or `?event_id=evt_...` |
-| `GET` | `/api/deliveries/{id}` | Show one delivery, including the event payload and endpoint |
-| `POST` | `/api/deliveries/{id}/retry` | Manually retry a delivery — only valid when its status is `failed` |
+**View delivery history**
 
 ```bash
-curl "https://webhookdeliveryservice.test/api/deliveries?status=failed"
-
-curl -X POST https://webhookdeliveryservice.test/api/deliveries/1/retry \
-  -H "Accept: application/json"
+curl "http://localhost:8000/api/deliveries?status=failed"
+curl "http://localhost:8000/api/deliveries/1"
 ```
 
-Retrying sets the delivery back to `pending` and dispatches one more attempt through the same
-`DeliverWebhookJob` — if that attempt still fails, it goes straight back to `failed` (a manual
-retry is "one more try," not a fresh 3-attempt budget). Retrying anything that isn't currently
-`failed` (still `pending`, or already `success`) returns a `422`.
+**Retry a failed delivery**
 
-### Signature verification
-
-Every outgoing delivery includes an `X-Webhook-Signature` header:
-
-```
-X-Webhook-Signature: sha256=<hex-encoded HMAC-SHA256 of the raw JSON body, keyed with the endpoint's secret>
+```bash
+curl -X POST http://localhost:8000/api/deliveries/1/retry -H "Accept: application/json"
 ```
 
-A receiver can verify a request genuinely came from this service (and wasn't tampered with in
-transit) by recomputing the same HMAC over the exact request body using the endpoint's
-`secret` and comparing it to the header, e.g. in PHP:
+This only works on deliveries that are currently `failed` — you'll get a `422` if you try it
+on something still `pending` or already `success`. See [Technical
+Decisions](#5-technical-decisions) for why.
+
+**Check overall stats**
+
+```bash
+curl "http://localhost:8000/api/stats"
+```
+
+Returns endpoint/event/delivery counts — this is what powers the dashboard.
+
+### How signature verification works
+
+Every webhook request we send out carries this header:
+
+```
+X-Webhook-Signature: sha256=<HMAC-SHA256 of the raw request body, keyed with the endpoint's secret>
+```
+
+If you're building the receiving side, verify it like this (PHP example, but the idea is the
+same in any language):
 
 ```php
-$expected = 'sha256=' . hash_hmac('sha256', $request->getContent(), $endpointSecret);
+$expected = 'sha256=' . hash_hmac('sha256', $rawRequestBody, $endpointSecret);
 hash_equals($expected, $request->header('X-Webhook-Signature'));
 ```
 
-### Stats
+If it matches, you know the request really came from this service and the body wasn't
+altered in transit.
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/stats` | Summary counts (endpoints/active, events, deliveries by status) — powers the dashboard so the frontend doesn't have to fetch every list just to show totals |
+## 4. Architecture
 
-## 5. Installation
-
-### Docker (fastest way to try it)
-
-Requires only Docker Desktop (or Docker Engine + Compose). No PHP, Composer, or Node needed
-on your machine — everything runs in containers.
-
-```bash
-docker compose up --build
+```
+ ┌────────────┐          ┌──────────────────────────┐
+ │  Vue SPA   │──HTTP───▶│       Laravel API        │
+ │ (frontend) │◀─────────│    routes/api.php        │
+ └────────────┘          └────────────┬─────────────┘
+                                       │
+                     ┌─────────────────┼─────────────────┐
+                     ▼                 ▼                 ▼
+            WebhookEndpointCtrl  EventController   DeliveryController
+                     │                 │                 │
+                     ▼                 ▼                 ▼
+              WebhookEndpoint     EventService      Delivery (read)
+                   model               │
+                                       ▼
+                           creates Event + one Delivery
+                           per active WebhookEndpoint,
+                           dispatches DeliverWebhookJob
+                                       │
+                                       ▼
+                           ┌────────────────────────┐
+                           │   Queue (DB driver)     │
+                           └────────────┬────────────┘
+                                        ▼
+                           ┌────────────────────────┐
+                           │   DeliverWebhookJob     │
+                           │   → WebhookDeliveryService
+                           │   → Laravel HTTP client │
+                           └────────────┬────────────┘
+                                        ▼
+                          updates the Delivery record
+                          (status / http_status / attempt_count / last_error)
 ```
 
-That single command builds the backend and frontend images, runs migrations once (via a
-one-off `migrate` service), then starts the API, the queue worker, and the frontend:
+### The pieces, and what each one is responsible for
 
-- Frontend: http://localhost:5173
-- API: http://localhost:8000/api
+- **Controllers** (`app/Http/Controllers/Api`) — deliberately thin. They validate the
+  request, call a service, and shape the response. No business logic lives here.
+- **Services** (`app/Services`) — where the actual logic lives.
+  - `EventService` creates events idempotently and fans them out to active endpoints.
+  - `WebhookDeliveryService` handles a single delivery attempt: makes the HTTP call, signs
+    it, and records the result.
+- **Jobs** (`app/Jobs/DeliverWebhookJob.php`) — the queued unit of work for one delivery.
+  This is what actually runs in the background.
+- **Models** — `WebhookEndpoint`, `Event`, `Delivery`. Plain Eloquent models with the
+  relationships between them.
 
-Each container bootstraps its own `.env` from `.env.example` and generates an app key on
-first start — there's nothing to configure by hand. The SQLite database lives in a named
-Docker volume (`sqlite_data`) so it survives `docker compose down` / `up` restarts; run
-`docker compose down -v` to wipe it and start fresh (e.g. after changing a migration).
+### Database design
 
-Useful follow-up commands:
+Three tables, kept intentionally simple:
 
-```bash
-docker compose exec app php artisan test        # run the backend test suite in-container
-docker compose exec app php artisan db:seed     # load the sample data (see below)
-docker compose logs -f queue                     # watch deliveries get processed
-```
+| Table | What it stores |
+|---|---|
+| `webhook_endpoints` | `name`, `url`, `secret` (for signing), `is_active` |
+| `events` | `event_id` (unique), `event_type`, `payload` (JSON) |
+| `deliveries` | one row per `(event, webhook_endpoint)` pair — `status`, `http_status`, `attempt_count`, `last_error`, `delivered_at` |
 
-> If port 8000 or 5173 is already in use on your machine, change the left-hand side of the
-> `ports:` mapping for that service in `docker-compose.yml`.
+The one rule enforced at the database level: a `(event_id, webhook_endpoint_id)` pair can
+only appear once in `deliveries`. That's what guarantees an event never gets delivered twice
+to the same endpoint, no matter what the application code does.
 
-### Native setup (without Docker)
+## 5. Technical Decisions
 
-#### Requirements
+This section explains the *why* behind the choices above — not just what was built, but the
+reasoning.
 
-- PHP 8.2+ (developed against 8.4)
-- Composer
-- Node.js 20+ (the frontend's `engines` field targets 22.18+/24.12+, but any recent LTS works)
-- SQLite (bundled with PHP's `pdo_sqlite` extension — no separate server needed)
+**Why background jobs instead of delivering synchronously?**
+Because an event-creation request shouldn't have to wait on someone else's server. If a
+webhook endpoint is slow or hanging, that's their problem, not something that should make
+`POST /api/events` time out for the caller. Delivery happens in `DeliverWebhookJob`, run by
+`php artisan queue:work` against Laravel's database queue driver. Database queue (not Redis)
+was chosen on purpose — it means no extra infrastructure to install, just what already ships
+with Laravel + SQLite.
 
-#### Backend
+**Why one delivery row per (event, endpoint) pair?**
+So "did event X reach endpoint Y" is always a single, clear answer with its own retry
+history — instead of something you have to reconstruct from logs. It also means one broken
+endpoint never affects delivery to the others.
 
-```bash
-composer install
-cp .env.example .env
-php artisan key:generate
-touch database/database.sqlite      # (on Windows: New-Item database/database.sqlite)
-php artisan migrate
+**How duplicate events are handled.**
+`events.event_id` is unique in the database. When a new event comes in,
+`EventService::createEvent()` checks for an existing row with that `event_id` first. If one
+exists, it's returned as-is and **no new deliveries are created**. In practice, this means
+you can safely retry a `POST /api/events` call (say, after a network blip on your end)
+without worrying about double-firing webhooks.
 
-php artisan serve                   # http://localhost:8000
-php artisan queue:work              # in a second terminal — processes webhook deliveries
-```
+**How retries work.**
+Each delivery gets up to `Delivery::MAX_ATTEMPTS` (3) attempts. After a failed attempt, the
+delivery stays `pending` as long as attempts remain — think of `pending` as "still in play,"
+not just "hasn't been tried yet." It only becomes `failed` once all 3 attempts are used up.
+Between attempts there's a short escalating delay (10 seconds, then 30). This is deliberate:
+non-2xx responses, timeouts, and connection errors are *expected* outcomes of calling
+someone else's server — not bugs — so they're handled as normal control flow inside
+`WebhookDeliveryService`, not as exceptions bubbling up somewhere else.
 
-Optionally, seed some realistic sample data (5 endpoints, 20 events, ~80 deliveries spread
-across `success`/`pending`/`failed`) so the UI/API have something to look at immediately:
+On top of that automatic retry, there's a separate **manual retry**
+(`POST /api/deliveries/{id}/retry`) for after the automatic budget runs out — say, once
+you've fixed a typo in the endpoint URL. It's restricted to deliveries currently `failed`:
+retrying a `pending` one would race the job that's already about to run it, and retrying a
+`success` one serves no purpose. A manual retry runs through the exact same code path as an
+automatic one, so there's only one delivery mechanism to reason about, not two.
 
-```bash
-php artisan migrate:fresh --seed
-```
+**Why a 5-second timeout.**
+So one unresponsive endpoint can't tie up a queue worker forever. Five seconds is generous
+enough for a normal server, short enough that a hung connection doesn't stall everything
+behind it.
 
-`WebhookDeliverySeeder` writes delivery rows directly with a settled status rather than
-firing real HTTP requests — it's for populating the UI, not for exercising the delivery
-pipeline (use the API in section 4 above for that, with `queue:work` running).
-
-If you use [Laravel Herd](https://herd.laravel.com), the site is served automatically at
-`APP_URL` (see `.env`) once the project directory is picked up — you only need the
-`queue:work` process to actually run deliveries.
-
-#### Frontend
-
-```bash
-cd frontend
-cp .env.example .env   # set VITE_API_BASE_URL to wherever the API is served
-npm install
-npm run dev             # http://localhost:5173
-```
-
-> If `npm install` reports a peer dependency conflict between `oxlint` and
-> `eslint-plugin-oxlint`, it's a version-pin mismatch in the dev tooling, unrelated to the
-> app itself — install with `npm install --legacy-peer-deps`.
-
-## 6. Technical Decisions
-
-**Queue-based delivery.** `POST /api/events` returns as soon as the `Delivery` rows are
-created; the HTTP calls to external endpoints happen in `DeliverWebhookJob`, run by
-`php artisan queue:work` against the `database` queue driver. This means a slow or hanging
-endpoint never blocks the event-creation request, and one endpoint being unreachable never
-affects delivery to the others. The database driver was chosen over Redis to keep the stack
-to what the assessment already ships with (SQLite + Laravel) — no extra infrastructure to run
-locally.
-
-**One delivery row per (event, endpoint) pair.** Enforced with a DB-level unique constraint.
-This is what makes "did event X reach endpoint Y" a single, independently-retryable record
-instead of something derived from logs.
-
-**Idempotent event creation.** `events.event_id` is unique at the database level.
-`EventService::createEvent()` looks the event up by `event_id` first; if it already exists,
-the existing record is returned as-is and **no new deliveries are created**. This means
-retrying a `POST /api/events` call with the same `event_id` (e.g. after a network blip on the
-caller's side) is safe and won't double-fire webhooks.
-
-**Retry strategy.** Up to `Delivery::MAX_ATTEMPTS` (3) attempts per delivery. A delivery stays
-`pending` after a failed attempt as long as attempts remain — `pending` here means "still in
-play," not just "not yet tried" — and only becomes `failed` once the budget is exhausted. The
-job re-queues itself with a short escalating delay (10s, then 30s) between attempts via
-`$this->release()`, rather than throwing and relying on Laravel's generic exception-retry
-path — the failure paths we care about (non-2xx, timeout, connection error) are all
-*expected* outcomes of calling someone else's server, not application bugs, so they're
-handled as normal control flow inside `WebhookDeliveryService`, not exceptions.
-
-**Timeouts.** The HTTP client uses a 5-second timeout (`WebhookDeliveryService::TIMEOUT_SECONDS`)
-so an endpoint that never responds can't tie up a queue worker indefinitely.
-
-**Only active endpoints receive new events.** `EventService` looks up
-`WebhookEndpoint::where('is_active', true)` at event-creation time. Disabling an endpoint has
-no effect on deliveries already in flight or already recorded — it only stops it from
-receiving *future* events, which matches how a real "pause this integration" toggle should
+**Only active endpoints get new events.**
+`EventService` filters to `WebhookEndpoint::where('is_active', true)` at the moment an event
+is created. Disabling an endpoint doesn't touch its existing delivery history — it just stops
+it from receiving *future* events, which is how a "pause this integration" toggle should
 behave.
 
-**No API authentication, but signed outgoing webhooks.** The assessment explicitly lists an
-auth system as out of scope, so the API itself is open by design — in a real deployment this
-would sit behind an API key or Sanctum token on the write endpoints. Outgoing deliveries *are*
-signed, though: each endpoint gets a server-generated `secret`, and every request carries an
-`X-Webhook-Signature: sha256=...` header (HMAC-SHA256 over the exact raw JSON body). That's
-the half of "authentication" that matters most for a webhook system specifically — it lets a
-receiver trust that a payload genuinely came from us — so it felt worth including even with
-the API itself left open.
+**No API authentication, but every outgoing webhook is signed.**
+The assessment explicitly leaves authentication out of scope, so the API itself is
+intentionally open — in a real deployment, the write endpoints would sit behind an API key
+or a Sanctum token. But signing outgoing webhooks felt worth doing anyway, because it's the
+half of "authentication" that matters most for a webhook system specifically: it lets whoever
+receives our webhooks confirm the request really came from us, not an authentication gate on
+our own API.
 
-**Manual retry as a separate, deliberate action.** Automatic retries (above) exist to ride out
-transient failures without a human involved. `POST /api/deliveries/{id}/retry` is a distinct
-mechanism for after that budget is exhausted — a person decides to redrive it (e.g. once
-they've fixed a misconfigured endpoint URL). It's intentionally restricted to `failed`
-deliveries only: retrying a `pending` one would race the job that's already about to run it,
-and retrying a `success` one has no purpose. It runs through the exact same `DeliverWebhookJob`
-→ `WebhookDeliveryService` path as an automatic attempt, so there's only one delivery code path
-to reason about, not two.
+**Why Laravel API + separate Vue app, instead of Blade.**
+The brief specifically offered this as an option, and a decoupled frontend/API is a more
+realistic shape for a "delivery service" — something other systems might also want to talk
+to someday. CORS is left at Laravel's default (`*` on `/api/*`), which is fine for a local
+project like this but would be locked down to a specific origin in a real deployment.
 
-**Backend/frontend split.** The brief asked specifically for a Laravel API + a separate
-Vue app rather than server-rendered Blade, so the two are decoupled over HTTP/JSON
-(CORS is left at Laravel's framework default, which already allows all origins on `/api/*`,
-since this is a local assessment project rather than a multi-tenant public API).
+## 6. Edge Cases & Limitations
 
-## 7. Edge Cases & Limitations
+### What's handled
 
-Handled:
+- **The same event submitted twice** → the second submission is a no-op. Same event
+  returned, no new deliveries.
+- **A disabled endpoint** → skipped when fanning out new events.
+- **Non-2xx response, connection failure, DNS failure, timeout** → all caught and recorded
+  with a readable error message, then retried up to the attempt limit.
+- **Invalid webhook URL or malformed event data** → rejected with a `422` and field-level
+  errors before anything touches the database.
+- **Deleting an endpoint that has delivery history** → its deliveries are deleted along with
+  it (cascade). Reasonable for this project's scope; a real production system would probably
+  soft-delete endpoints instead so history survives.
+- **A delivery that's permanently failed** → filterable in the delivery list
+  (`?status=failed`), and can be manually retried without touching the database directly.
+- **Whether a webhook request can be trusted** → every request is HMAC-signed, so it isn't
+  just "whatever hit your endpoint."
 
-- **Duplicate `event_id`** → ignored, returns the original event, no new deliveries.
-- **Disabled endpoint** → excluded from delivery fan-out at creation time.
-- **Non-2xx response, connection failure, DNS failure, timeout** → all caught, recorded on
-  the delivery with a human-readable `last_error`, and retried up to the attempt limit.
-- **Invalid webhook URL / malformed event payload** → rejected at the request-validation
-  layer (`422` with field errors) before anything is persisted.
-- **Endpoint deleted while deliveries reference it** → deliveries cascade-delete with the
-  endpoint (acceptable for this scope; a production system would likely soft-delete
-  endpoints instead so delivery history survives removal).
-- **Permanently failed delivery** → filterable via `status=failed` in the delivery list, and
-  redrivable with `POST /api/deliveries/{id}/retry` (button in the UI too) without needing
-  direct database access.
-- **Receiver verifying authenticity** → every delivery is HMAC-signed (see
-  [Signature verification](#signature-verification)) so a receiver isn't just trusting
-  whatever hits their endpoint.
+### What's intentionally left out (and why that's OK for this scope)
 
-Known limitations (reasonable to leave out given the assessment's scope):
+- **No auth on the API itself.** Signing covers "did this webhook really come from us," but
+  not "who's allowed to call this API." Out of scope per the brief.
+- **Fixed retry delays (10s, then 30s)**, not a fully configurable backoff strategy.
+- **Simple page-number pagination** (25 per page), not cursor-based — plenty for the amount
+  of data this project generates.
+- **No schema validation per event type.** The `payload` field accepts any JSON object; the
+  app doesn't check that a `user.created` event looks a particular way.
+- **Docker is built for "clone it and run it," not live development.** Code is baked into the
+  image at build time rather than mounted from your machine, so a code change needs
+  `docker compose up --build` to take effect. For active development, use the native setup
+  (Option B) or Herd instead.
 
-- No authentication/authorization on the API itself (see Technical Decisions above) — signing
-  covers "did this webhook really come from us," not "who's allowed to call this API."
-- Retry delays are fixed (10s/30s), not a configurable exponential backoff.
-- Pagination is a flat page size (25) with no cursor/keyset pagination — fine for the data
-  volumes this exercise produces.
-- The event `payload` accepts any JSON object; there's no per-`event_type` schema validation.
-- The Docker Compose setup optimizes for "clone and run it," not active development inside
-  containers — app/frontend source is baked into the image at build time rather than bind-
-  mounted, so a code change needs `docker compose up --build` to take effect. The native setup
-  above (or Herd) is the better fit for actively working on the code.
+## 7. Testing
 
-## 8. Testing
-
-**Backend** (Pest, run from the project root):
+### Backend
 
 ```bash
 php artisan test
 ```
 
-96 tests covering:
+96 tests, run with Pest. Roughly, they cover:
 
-- Webhook endpoint CRUD, including validation errors.
-- Event creation, duplicate `event_id` handling, and that only active endpoints receive
-  deliveries (feature tests, using `Http::fake()` so nothing hits the network).
-- `WebhookDeliveryService`: success (2xx), non-2xx failure, connection-exception failure, a
-  delivery being marked `failed` for good once the retry budget is exhausted, and that every
-  request is signed with the correct HMAC over the exact raw body.
-- `DeliverWebhookJob`: retrying up to the max attempt count, stopping early on a later
-  success, and handling a missing delivery gracefully.
-- Delivery listing/filtering, the delivery detail endpoint, and manually retrying a delivery
-  (including rejecting a retry on anything that isn't currently `failed`).
-- The `/api/stats` summary endpoint.
+- **Webhook endpoints** — creating, listing, enabling/disabling, deleting, and validation
+  errors along the way.
+- **Events** — creation, duplicate `event_id` handling, and making sure only active
+  endpoints receive new deliveries. These use `Http::fake()`, so nothing actually hits the
+  network.
+- **Delivery logic** (`WebhookDeliveryService`) — a successful (2xx) response, a non-2xx
+  failure, a connection-level failure, a delivery reaching `failed` once attempts run out,
+  and that the signature header is computed correctly.
+- **The delivery job** (`DeliverWebhookJob`) — retrying up to the max attempt count,
+  stopping early after a later success, and not blowing up if the delivery record no longer
+  exists.
+- **Delivery listing, filtering, and manual retry** — including that retry correctly
+  refuses anything that isn't currently `failed`.
+- **The stats endpoint.**
 
-Tests run against an in-memory SQLite database with `QUEUE_CONNECTION=sync` (see
-`phpunit.xml`), so dispatched jobs execute inline within the same request/test — no worker
-process needed to see delivery results in feature tests.
+Tests run against an in-memory SQLite database with the queue set to run synchronously (see
+`phpunit.xml`), so a dispatched job runs immediately, inline, in the same test — no separate
+worker process needed to see the result.
 
-**Frontend:**
+### Frontend
 
 ```bash
 cd frontend
 npm run test:unit
 ```
 
-Covers `src/api/client.js` (`src/api/__tests__/client.spec.js`) — the one piece of frontend
-code with actual logic worth testing: parsing a successful JSON response, turning a `422`
-into an `ApiError` with its field errors attached, treating `204 No Content` as no body
-instead of trying to parse one, and dropping empty query-string filters. Given the
-assessment's time budget, testing effort was otherwise concentrated on the backend (retries,
-idempotency, failure handling), while the Vue views themselves are thin and were verified
-manually in the browser rather than with component tests.
+This covers the API client (`src/api/client.js`) — the one piece of frontend code with real
+logic worth testing on its own: parsing a successful response, turning a `422` into a proper
+error with its field messages attached, treating "204 No Content" correctly instead of trying
+to parse an empty body, and not sending empty filters in the query string.
+
+Given the time budget, testing effort went mostly into the backend, where the actual
+business logic (retries, idempotency, signing, failure handling) lives. The Vue views
+themselves are thin wrappers around the API and were checked by hand in the browser rather
+than with component tests.
+
+
+## 8. AI Tools
+
+### Where AI tools were particularly useful
+
+AI tools are part of my everyday workflow now — the pace this industry expects makes that
+less of a luxury and more of a baseline skill. For this project, Claude Code was useful in
+two ways at once.
+
+First, as a learning accelerator: it let me pick up patterns and approaches faster than
+researching alone would have, especially for parts of the stack I touch less often. Second,
+as an implementation partner: things that used to take a lot of trial and error — wiring up
+a queue-based retry flow, structuring the API cleanly, getting Docker Compose right on the
+first real run — came together noticeably faster, because I could iterate on a working
+version instead of building everything from a blank file.
+
+In practice, that meant learning and building happened at the same time, instead of one
+blocking the other.
