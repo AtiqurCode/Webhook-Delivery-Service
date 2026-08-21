@@ -1,5 +1,5 @@
 # Webhook Delivery Service
-https://drive.google.com/file/d/1emEpFytMEZ61wGMeXjatuqiFvLYf39dr/view?usp=drive_link
+
 A small service that receives events and delivers them to registered webhook endpoints,
 keeping a full history of what was sent and what happened.
 
