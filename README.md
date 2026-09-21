@@ -3,6 +3,8 @@
 A small service that receives events and delivers them to registered webhook endpoints,
 keeping a full history of what was sent and what happened.
 
+Requirement: **https://docs.google.com/document/d/1WSiV0YLcAJ6-GN_iGdhRah8TdcCxhUg4k7VL9z6dp10/edit?tab=t.0#heading=h.fkac0adverhq**
+
 ```
 Receive Event → Process Event → Deliver Webhook → Track Result
 ```
